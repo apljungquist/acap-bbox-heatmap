@@ -8,6 +8,8 @@ use std::ops::Sub;
 const TOPIC: &CStr = c"com.axis.consolidated_track.v1.beta";
 const SOURCE: &CStr = c"1";
 
+const SENSITIVITY: f64 = 190.0;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -147,7 +149,8 @@ fn main() -> anyhow::Result<()> {
             ClassType::Vehicle => gray,
         };
         bbox.try_color(color)?;
-        let mut observations = observations.into_iter();
+        let step = (observations.len() as f64 / SENSITIVITY).ceil().max(1.0) as usize;
+        let mut observations = observations.into_iter().step_by(step);
         if let Some(obs) = observations.next() {
             let Point2D { x, y } = obs.bounding_box.ground_intersection();
             bbox.try_move_to(x, y)?;
@@ -156,6 +159,7 @@ fn main() -> anyhow::Result<()> {
             let Point2D { x, y } = obs.bounding_box.ground_intersection();
             bbox.try_line_to(x, y)?
         }
+        bbox.try_draw_path()?;
     }
     Ok(())
 }

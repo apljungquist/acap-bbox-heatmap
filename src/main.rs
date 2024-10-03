@@ -1,16 +1,14 @@
+use std::ffi::CStr;
+
 use bbox::flex::{Bbox, Color as BboxColor};
 use log::{debug, warn};
 use mdb::{Connection, Subscriber, SubscriberConfig};
-
-use std::ffi::CStr;
-use std::ops::Sub;
+use serde::{Deserialize, Serialize};
 
 const TOPIC: &CStr = c"com.axis.consolidated_track.v1.beta";
 const SOURCE: &CStr = c"1";
 
 const SENSITIVITY: f64 = 190.0;
-
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 struct Point2D {
@@ -28,7 +26,7 @@ struct BoundingBox {
 impl BoundingBox {
     fn ground_intersection(&self) -> Point2D {
         Point2D {
-            x: self.left + self.left.sub(self.right).abs() / 2.0,
+            x: self.left + (self.right - self.left) / 2.0,
             y: self.bottom,
         }
     }
@@ -55,7 +53,6 @@ struct Class {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
 enum ClassType {
     Bike,
     Bus,
@@ -66,6 +63,7 @@ enum ClassType {
 }
 #[derive(Serialize, Deserialize, Debug)]
 struct Data {
+    #[serde(default = "Vec::new")]
     classes: Vec<Class>,
     duration: f32,
     end_time: Option<String>,
@@ -117,20 +115,22 @@ fn main() -> anyhow::Result<()> {
     let gray = BboxColor::from_rgb(0x80, 0x80, 0x80);
 
     bbox.try_clear()?;
-    while let Ok(m) = rx.recv() {
-        debug!("Received {m:?}");
+    while let Ok(msg) = rx.recv() {
+        let msg = msg?;
+        let msg = match serde_json::from_str(&msg) {
+            Ok(d) => d,
+            Err(e) => {
+                debug!("Received {msg:?}");
+                warn!("Could not deserialize because {e:?}");
+                continue;
+            }
+        };
         let Data {
             end_time,
             observations,
             classes,
             ..
-        } = match serde_json::from_str(&m?) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("Could not deserialize because {e:?}");
-                continue;
-            }
-        };
+        } = msg;
         if end_time.is_none() {
             debug!("Track has not ended, skipping.");
             continue;
@@ -148,6 +148,9 @@ fn main() -> anyhow::Result<()> {
             ClassType::Truck => red,
             ClassType::Vehicle => gray,
         };
+
+        // The program sometimes exits because one of the bbox calls fail.
+        // Not sure which, why or what to do though.
         bbox.try_color(color)?;
         let step = (observations.len() as f64 / SENSITIVITY).ceil().max(1.0) as usize;
         let mut observations = observations.into_iter().step_by(step);
@@ -157,9 +160,12 @@ fn main() -> anyhow::Result<()> {
         }
         for obs in observations {
             let Point2D { x, y } = obs.bounding_box.ground_intersection();
-            bbox.try_line_to(x, y)?
+            // On at least one occasion this failed:
+            // Protocol not available (os error 92)
+            bbox.try_line_to(x, y)?;
         }
         bbox.try_draw_path()?;
+        bbox.try_commit(0)?;
     }
     Ok(())
 }
